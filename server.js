@@ -16,7 +16,6 @@ const REDIRECT_URI = cleanEnv(process.env.ROBLOX_REDIRECT_URI);
 
 const SCOPES = 'openid profile asset:read asset:write';
 
-// In-memory store so large Roblox OAuth tokens never exceed browser 4KB cookie limits
 const sessionStore = new Map();
 
 app.set('trust proxy', 1);
@@ -31,7 +30,6 @@ app.use(
   })
 );
 
-// Helper to get exact MIME type required by Roblox Open Cloud Assets API
 function getRobloxMimeType(filename) {
   const ext = path.extname(filename).toLowerCase();
   if (ext === '.rbxm' || ext === '.rbxmx') return 'model/x-rbxm';
@@ -39,6 +37,36 @@ function getRobloxMimeType(filename) {
   if (ext === '.glb') return 'model/gltf-binary';
   if (ext === '.gltf') return 'model/gltf+json';
   return 'model/x-rbxm';
+}
+
+// Build raw multipart/form-data buffer with exact Content-Length for Roblox Open Cloud
+function buildRobloxMultipart(jsonString, fileBuffer, filename, fileMime) {
+  const boundary = '----RobloxOpenCloudBoundary' + crypto.randomBytes(8).toString('hex');
+  const crlf = '\r\n';
+
+  const part1Header = Buffer.from(
+    `--${boundary}${crlf}` +
+    `Content-Disposition: form-data; name="request"${crlf}` +
+    `Content-Type: application/json${crlf}${crlf}` +
+    `${jsonString}${crlf}`,
+    'utf-8'
+  );
+
+  const part2Header = Buffer.from(
+    `--${boundary}${crlf}` +
+    `Content-Disposition: form-data; name="fileContent"; filename="${filename}"${crlf}` +
+    `Content-Type: ${fileMime}${crlf}${crlf}`,
+    'utf-8'
+  );
+
+  const footer = Buffer.from(`${crlf}--${boundary}--${crlf}`, 'utf-8');
+
+  const bodyBuffer = Buffer.concat([part1Header, part2Header, fileBuffer, footer]);
+  return {
+    bodyBuffer,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    contentLength: bodyBuffer.length
+  };
 }
 
 // 1. Get current logged-in user status
@@ -54,7 +82,7 @@ app.get('/api/user', (req, res) => {
   });
 });
 
-// 2. Redirect to Roblox OAuth 2.0 login (forces consent screen for asset:write)
+// 2. Redirect to Roblox OAuth 2.0 login
 app.get('/auth/roblox', (req, res) => {
   const authUrl = new URL('https://apis.roblox.com/oauth/v1/authorize');
   authUrl.searchParams.set('client_id', CLIENT_ID);
@@ -92,10 +120,6 @@ app.get('/oauth/callback', async (req, res) => {
     const tokenData = await tokenRes.json();
     const accessToken = (tokenData.access_token || '').trim();
 
-    // Verify granted scopes include asset:write
-    console.log('Granted OAuth Scopes:', tokenData.scope);
-
-    // Fetch user info using OpenID endpoint
     const userRes = await fetch('https://apis.roblox.com/oauth/v1/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -104,7 +128,6 @@ app.get('/oauth/callback', async (req, res) => {
 
     const userData = await userRes.json();
 
-    // Generate lightweight session ID and save full token in server memory
     const sid = crypto.randomBytes(16).toString('hex');
     sessionStore.set(sid, {
       accessToken: accessToken,
@@ -124,7 +147,7 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// 4. Upload Model API endpoint
+// 4. Upload Model API endpoint with 20s timeout protection
 app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
   const sid = req.session?.sid;
   if (!sid || !sessionStore.has(sid)) {
@@ -142,34 +165,46 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
   const filename = req.file.originalname || 'model.rbxm';
   const mimeType = getRobloxMimeType(filename);
 
-  try {
-    const formData = new FormData();
-
-    const requestJson = {
-      assetType: 'Model',
-      displayName: displayName || filename.replace(/\.[^/.]+$/, ''),
-      description: description || 'Uploaded via Mobile Web App',
-      creationContext: {
-        creator: {
-          userId: String(verifiedUserId)
-        }
+  const requestJson = JSON.stringify({
+    assetType: 'Model',
+    displayName: displayName || filename.replace(/\.[^/.]+$/, ''),
+    description: description || 'Uploaded via Mobile Web App',
+    creationContext: {
+      creator: {
+        userId: String(verifiedUserId)
       }
-    };
+    }
+  });
 
-    formData.append('request', JSON.stringify(requestJson));
+  const { bodyBuffer, contentType, contentLength } = buildRobloxMultipart(
+    requestJson,
+    req.file.buffer,
+    filename,
+    mimeType
+  );
 
-    const fileBlob = new Blob([req.file.buffer], { type: mimeType });
-    formData.append('fileContent', fileBlob, filename);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000); // 20s max timeout
+
+  try {
+    console.log(`Uploading ${filename} (${contentLength} bytes, ${mimeType}) for user ${verifiedUserId}...`);
 
     const uploadResponse = await fetch('https://apis.roblox.com/assets/v1/assets', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': contentType,
+        'Content-Length': String(contentLength)
       },
-      body: formData
+      body: bodyBuffer,
+      signal: controller.signal
     });
 
+    clearTimeout(timeout);
+
     const rawText = await uploadResponse.text();
+    console.log('Roblox Response:', uploadResponse.status, rawText);
+
     let responseBody = {};
     try {
       responseBody = JSON.parse(rawText);
@@ -178,9 +213,8 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
     }
 
     if (!uploadResponse.ok) {
-      console.error('Roblox Assets API Error:', uploadResponse.status, responseBody);
       return res.status(uploadResponse.status).json({
-        error: `${responseBody.message || 'Upload rejected'} (HTTP ${uploadResponse.status} | Scopes: ${sessionData.scope || 'unknown'})`,
+        error: `${responseBody.message || rawText || 'Upload rejected'} (HTTP ${uploadResponse.status})`,
         details: responseBody
       });
     }
@@ -190,8 +224,9 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
       data: responseBody
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Upload failed due to server error: ' + err.message });
+    clearTimeout(timeout);
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Upload request failed: ' + err.message });
   }
 });
 
