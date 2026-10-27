@@ -7,35 +7,35 @@ require('dotenv').config();
 const app = express();
 const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } }); // 20 MB max
 
-// Helper function to sanitize environment strings (removes spaces, \r, \n)
+// Helper function to sanitize environment strings
 const cleanEnv = (val) => (val || '').trim().replace(/[\r\n\t]+/g, '');
 
 const CLIENT_ID = cleanEnv(process.env.ROBLOX_CLIENT_ID);
 const CLIENT_SECRET = cleanEnv(process.env.ROBLOX_CLIENT_SECRET);
 const REDIRECT_URI = cleanEnv(process.env.ROBLOX_REDIRECT_URI);
 
-// Scopes required for OpenID identity & asset uploads
 const SCOPES = 'openid profile asset:read asset:write';
 
-// Trust Render reverse proxy for secure cookies
+// Trust Render reverse proxy
 app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
 app.use(
   cookieSession({
-    name: 'session',
-    keys: [cleanEnv(process.env.SESSION_SECRET) || 'roblox_session_secret_key'],
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production'
+    name: 'rbx_sess',
+    keys: [cleanEnv(process.env.SESSION_SECRET) || 'roblox_session_secret_12345'],
+    maxAge: 24 * 60 * 60 * 1000,
+    secure: false, // Allows cookie over Render proxy
+    sameSite: 'lax'
   })
 );
 
 // 1. Get current logged-in user status
 app.get('/api/user', (req, res) => {
-  if (!req.session || !req.session.user) {
-    return res.status(401).json({ authenticated: false });
+  if (!req.session || !req.session.user || !req.session.token) {
+    return res.json({ authenticated: false });
   }
   res.json({
     authenticated: true,
@@ -74,13 +74,13 @@ app.get('/oauth/callback', async (req, res) => {
 
     if (!tokenRes.ok) {
       const errText = await tokenRes.text();
-      return res.status(tokenRes.status).send(`Token error: ${errText}`);
+      return res.status(tokenRes.status).send(`Token exchange error: ${errText}`);
     }
 
     const tokenData = await tokenRes.json();
     const accessToken = tokenData.access_token;
 
-    // Fetch user info using OpenID endpoint to acquire correct 'sub' (Roblox User ID)
+    // Fetch user info using OpenID endpoint
     const userRes = await fetch('https://apis.roblox.com/oauth/v1/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -89,12 +89,12 @@ app.get('/oauth/callback', async (req, res) => {
 
     const userData = await userRes.json();
 
-    // Store token and verified user ID in secure session
-    req.session.accessToken = accessToken;
+    // Store verified token and ID
+    req.session.token = accessToken;
     req.session.user = {
-      userId: userData.sub,
-      name: userData.name || userData.preferred_username || userData.nickname,
-      picture: userData.picture
+      userId: String(userData.sub),
+      name: userData.name || userData.preferred_username || userData.nickname || 'Roblox User',
+      picture: userData.picture || ''
     };
 
     res.redirect('/');
@@ -106,8 +106,8 @@ app.get('/oauth/callback', async (req, res) => {
 
 // 4. Upload Model API endpoint
 app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
-  if (!req.session || !req.session.accessToken || !req.session.user) {
-    return res.status(401).json({ error: 'Please log in with Roblox first.' });
+  if (!req.session || !req.session.token || !req.session.user) {
+    return res.status(401).json({ error: 'Session expired. Please log out and log in again.' });
   }
 
   if (!req.file) {
@@ -116,6 +116,7 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
 
   const { displayName, description } = req.body;
   const verifiedUserId = req.session.user.userId;
+  const token = req.session.token;
 
   try {
     const formData = new FormData();
@@ -126,7 +127,7 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
       description: description || 'Uploaded via Mobile Web App',
       creationContext: {
         creator: {
-          userId: String(verifiedUserId)
+          userId: verifiedUserId
         }
       }
     };
@@ -139,7 +140,7 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
     const uploadResponse = await fetch('https://apis.roblox.com/assets/v1/assets', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${req.session.accessToken}`
+        'Authorization': `Bearer ${token}`
       },
       body: formData
     });
@@ -147,16 +148,15 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
     const responseBody = await uploadResponse.json();
 
     if (!uploadResponse.ok) {
-      console.error('Roblox API Error:', responseBody);
+      console.error('Roblox Assets API Error:', responseBody);
       return res.status(uploadResponse.status).json({
-        error: responseBody.message || 'Roblox rejected the upload.',
+        error: responseBody.message || responseBody.code || 'Roblox rejected the upload.',
         details: responseBody
       });
     }
 
     res.json({
       success: true,
-      message: 'Model uploaded successfully to your Roblox inventory!',
       data: responseBody
     });
   } catch (err) {
