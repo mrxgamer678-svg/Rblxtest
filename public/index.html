@@ -17,30 +17,30 @@
     .user-info .id { font-size: 0.75rem; color: #8ab4f8; }
     .btn { display: block; width: 100%; padding: 14px; border-radius: 10px; border: none; font-weight: 600; font-size: 1rem; cursor: pointer; text-align: center; text-decoration: none; transition: 0.2s; }
     .btn-roblox { background: #00a2ff; color: #fff; }
-    .btn-roblox:active { background: #0081cc; }
-    .btn-logout { background: transparent; color: #e57373; font-size: 0.8rem; padding: 6px; width: auto; margin-top: 4px; }
+    .btn-logout { background: transparent; color: #e57373; font-size: 0.8rem; padding: 6px; width: auto; margin-top: 4px; display: inline-block; }
     .form-group { margin-bottom: 16px; }
     label { display: block; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 6px; font-weight: 500; }
     input[type="text"], textarea { width: 100%; padding: 12px; background: #12141a; border: 1px solid #323846; border-radius: 8px; color: #fff; font-size: 0.9rem; }
     input[type="file"] { width: 100%; padding: 10px; background: #12141a; border: 1px dashed #4b5563; border-radius: 8px; color: #9ca3af; font-size: 0.85rem; }
     .btn-upload { background: #10b981; color: #fff; margin-top: 10px; }
     .btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
-    .status { margin-top: 15px; font-size: 0.85rem; padding: 10px; border-radius: 8px; display: none; word-break: break-all; }
+    .status { margin-top: 15px; font-size: 0.85rem; padding: 12px; border-radius: 8px; display: none; word-break: break-all; }
     .status.success { display: block; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #059669; }
     .status.error { display: block; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #dc2626; }
+    .status.info { display: block; background: rgba(0, 162, 255, 0.15); color: #60a5fa; border: 1px solid #2563eb; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Roblox Model Uploader</h1>
-    <p class="sub">Upload .rbxm files directly from mobile via OAuth 2.0</p>
+    <p class="sub">Upload .rbxm models directly to your Roblox inventory</p>
 
     <!-- Login Section -->
     <div id="authSection">
       <a href="/auth/roblox" class="btn btn-roblox">Log in with Roblox</a>
     </div>
 
-    <!-- Upload Form Section (hidden by default) -->
+    <!-- Upload Form Section -->
     <div id="uploadSection" style="display: none;">
       <div class="user-box">
         <img id="userAvatar" src="" alt="Avatar">
@@ -54,11 +54,11 @@
       <form id="uploadForm">
         <div class="form-group">
           <label>Select Model File (.rbxm)</label>
-          <input type="file" name="modelFile" accept=".rbxm" required>
+          <input type="file" id="fileInput" name="modelFile" accept=".rbxm" required>
         </div>
         <div class="form-group">
           <label>Model Name</label>
-          <input type="text" name="displayName" placeholder="e.g. LowPoly Tree" required>
+          <input type="text" name="displayName" placeholder="e.g. Tree Model" required>
         </div>
         <div class="form-group">
           <label>Description (Optional)</label>
@@ -89,7 +89,7 @@
           }
         }
       } catch (err) {
-        console.error('Failed checking session', err);
+        console.error('Session check failed', err);
       }
     }
 
@@ -99,10 +99,10 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      statusBox.className = 'status';
-      statusBox.style.display = 'none';
+      statusBox.className = 'status info';
+      statusBox.style.display = 'block';
+      statusBox.innerHTML = '⏳ Uploading file to Roblox Open Cloud...';
       submitBtn.disabled = true;
-      submitBtn.innerText = 'Uploading...';
 
       const formData = new FormData(form);
 
@@ -113,17 +113,185 @@
         });
 
         const result = await res.json();
-        if (res.ok) {
+        
+        if (!res.ok) {
+          statusBox.className = 'status error';
+          statusBox.innerHTML = `❌ <b>Roblox Error:</b> ${result.error || JSON.stringify(result.details || 'Upload rejected')}`;
+          return;
+        }
+
+        // Check if Roblox returned an assetId or background operation
+        const assetId = result.data.assetId || (result.data.response && result.data.response.assetId);
+        const operationPath = result.data.path;
+
+        if (assetId) {
           statusBox.className = 'status success';
-          statusBox.innerHTML = `✅ <b>Success!</b> Model uploaded. Asset ID: <code>${result.data.assetId || result.data.path || 'Created'}</code>`;
+          statusBox.innerHTML = `✅ <b>Success!</b> Model uploaded!<br><b>Asset ID:</b> <code>${assetId}</code>`;
+          form.reset();
+        } else if (operationPath) {
+          statusBox.className = 'status success';
+          statusBox.innerHTML = `✅ <b>Success!</b> Roblox is processing your model.<br><b>Operation:</b> <code>${operationPath}</code><br><small>It will show in your Roblox Creator inventory shortly.</small>`;
           form.reset();
         } else {
-          statusBox.className = 'status error';
-          statusBox.innerHTML = `❌ <b>Error:</b> ${result.error || 'Failed to upload'}`;
+          statusBox.className = 'status success';
+          statusBox.innerHTML = `✅ <b>Success!</b> ${JSON.stringify(result.data)}`;
+          form.reset();
         }
       } catch (err) {
         statusBox.className = 'status error';
-        statusBox.innerText = 'Network error during upload.';
+        statusBox.innerHTML = `❌ <b>Request failed:</b> ${err.message || 'Network error'}`;
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerText = 'Upload to Roblox';
+      }
+    });
+
+    checkAuth();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Roblox Mobile Model Uploader</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #0f1115; color: #fff; padding: 20px 16px; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+    .card { width: 100%; max-width: 440px; background: #1a1d24; border: 1px solid #2a2e39; border-radius: 16px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+    h1 { font-size: 1.4rem; font-weight: 700; text-align: center; margin-bottom: 8px; color: #00a2ff; }
+    p.sub { font-size: 0.85rem; color: #9aa0a6; text-align: center; margin-bottom: 24px; }
+    .user-box { display: flex; align-items: center; gap: 12px; background: #232732; padding: 12px; border-radius: 12px; margin-bottom: 20px; }
+    .user-box img { width: 44px; height: 44px; border-radius: 50%; background: #333; }
+    .user-info { flex: 1; }
+    .user-info .name { font-weight: 600; font-size: 0.95rem; }
+    .user-info .id { font-size: 0.75rem; color: #8ab4f8; }
+    .btn { display: block; width: 100%; padding: 14px; border-radius: 10px; border: none; font-weight: 600; font-size: 1rem; cursor: pointer; text-align: center; text-decoration: none; transition: 0.2s; }
+    .btn-roblox { background: #00a2ff; color: #fff; }
+    .btn-logout { background: transparent; color: #e57373; font-size: 0.8rem; padding: 6px; width: auto; margin-top: 4px; display: inline-block; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 6px; font-weight: 500; }
+    input[type="text"], textarea { width: 100%; padding: 12px; background: #12141a; border: 1px solid #323846; border-radius: 8px; color: #fff; font-size: 0.9rem; }
+    input[type="file"] { width: 100%; padding: 10px; background: #12141a; border: 1px dashed #4b5563; border-radius: 8px; color: #9ca3af; font-size: 0.85rem; }
+    .btn-upload { background: #10b981; color: #fff; margin-top: 10px; }
+    .btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status { margin-top: 15px; font-size: 0.85rem; padding: 12px; border-radius: 8px; display: none; word-break: break-all; }
+    .status.success { display: block; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #059669; }
+    .status.error { display: block; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #dc2626; }
+    .status.info { display: block; background: rgba(0, 162, 255, 0.15); color: #60a5fa; border: 1px solid #2563eb; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Roblox Model Uploader</h1>
+    <p class="sub">Upload .rbxm models directly to your Roblox inventory</p>
+
+    <!-- Login Section -->
+    <div id="authSection">
+      <a href="/auth/roblox" class="btn btn-roblox">Log in with Roblox</a>
+    </div>
+
+    <!-- Upload Form Section -->
+    <div id="uploadSection" style="display: none;">
+      <div class="user-box">
+        <img id="userAvatar" src="" alt="Avatar">
+        <div class="user-info">
+          <div class="name" id="userName">Roblox User</div>
+          <div class="id">ID: <span id="userId"></span></div>
+          <a href="/auth/logout" class="btn-logout">Log out</a>
+        </div>
+      </div>
+
+      <form id="uploadForm">
+        <div class="form-group">
+          <label>Select Model File (.rbxm)</label>
+          <input type="file" id="fileInput" name="modelFile" accept=".rbxm" required>
+        </div>
+        <div class="form-group">
+          <label>Model Name</label>
+          <input type="text" name="displayName" placeholder="e.g. Tree Model" required>
+        </div>
+        <div class="form-group">
+          <label>Description (Optional)</label>
+          <textarea name="description" rows="2" placeholder="Uploaded via mobile uploader"></textarea>
+        </div>
+        <button type="submit" id="submitBtn" class="btn btn-upload">Upload to Roblox</button>
+      </form>
+    </div>
+
+    <div id="statusBox" class="status"></div>
+  </div>
+
+  <script>
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/user');
+        const data = await res.json();
+
+        if (data.authenticated) {
+          document.getElementById('authSection').style.display = 'none';
+          document.getElementById('uploadSection').style.display = 'block';
+          document.getElementById('userName').textContent = data.user.name;
+          document.getElementById('userId').textContent = data.user.userId;
+          if (data.user.picture) {
+            document.getElementById('userAvatar').src = data.user.picture;
+          } else {
+            document.getElementById('userAvatar').style.display = 'none';
+          }
+        }
+      } catch (err) {
+        console.error('Session check failed', err);
+      }
+    }
+
+    const form = document.getElementById('uploadForm');
+    const statusBox = document.getElementById('statusBox');
+    const submitBtn = document.getElementById('submitBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      statusBox.className = 'status info';
+      statusBox.style.display = 'block';
+      statusBox.innerHTML = '⏳ Uploading file to Roblox Open Cloud...';
+      submitBtn.disabled = true;
+
+      const formData = new FormData(form);
+
+      try {
+        const res = await fetch('/api/upload-model', {
+          method: 'POST',
+          body: formData
+        });
+
+        const result = await res.json();
+        
+        if (!res.ok) {
+          statusBox.className = 'status error';
+          statusBox.innerHTML = `❌ <b>Roblox Error:</b> ${result.error || JSON.stringify(result.details || 'Upload rejected')}`;
+          return;
+        }
+
+        // Check if Roblox returned an assetId or background operation
+        const assetId = result.data.assetId || (result.data.response && result.data.response.assetId);
+        const operationPath = result.data.path;
+
+        if (assetId) {
+          statusBox.className = 'status success';
+          statusBox.innerHTML = `✅ <b>Success!</b> Model uploaded!<br><b>Asset ID:</b> <code>${assetId}</code>`;
+          form.reset();
+        } else if (operationPath) {
+          statusBox.className = 'status success';
+          statusBox.innerHTML = `✅ <b>Success!</b> Roblox is processing your model.<br><b>Operation:</b> <code>${operationPath}</code><br><small>It will show in your Roblox Creator inventory shortly.</small>`;
+          form.reset();
+        } else {
+          statusBox.className = 'status success';
+          statusBox.innerHTML = `✅ <b>Success!</b> ${JSON.stringify(result.data)}`;
+          form.reset();
+        }
+      } catch (err) {
+        statusBox.className = 'status error';
+        statusBox.innerHTML = `❌ <b>Request failed:</b> ${err.message || 'Network error'}`;
       } finally {
         submitBtn.disabled = false;
         submitBtn.innerText = 'Upload to Roblox';
