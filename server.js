@@ -7,20 +7,28 @@ require('dotenv').config();
 const app = express();
 const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } }); // 20 MB max
 
-const CLIENT_ID = process.env.ROBLOX_CLIENT_ID;
-const CLIENT_SECRET = process.env.ROBLOX_CLIENT_SECRET;
-const REDIRECT_URI = process.env.ROBLOX_REDIRECT_URI;
+// Helper function to sanitize environment strings (removes spaces, \r, \n)
+const cleanEnv = (val) => (val || '').trim().replace(/[\r\n\t]+/g, '');
+
+const CLIENT_ID = cleanEnv(process.env.ROBLOX_CLIENT_ID);
+const CLIENT_SECRET = cleanEnv(process.env.ROBLOX_CLIENT_SECRET);
+const REDIRECT_URI = cleanEnv(process.env.ROBLOX_REDIRECT_URI);
 
 // Scopes required for OpenID identity & asset uploads
 const SCOPES = 'openid profile asset:read asset:write';
+
+// Trust Render reverse proxy for secure cookies
+app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(
   cookieSession({
     name: 'session',
-    keys: [process.env.SESSION_SECRET || 'roblox_session_secret_key'],
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    keys: [cleanEnv(process.env.SESSION_SECRET) || 'roblox_session_secret_key'],
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production'
   })
 );
 
@@ -51,7 +59,6 @@ app.get('/oauth/callback', async (req, res) => {
   if (!code) return res.status(400).send('Authorization code missing.');
 
   try {
-    // Exchange authorization code for access token
     const tokenParams = new URLSearchParams({
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,
@@ -111,10 +118,8 @@ app.post('/api/upload-model', upload.single('modelFile'), async (req, res) => {
   const verifiedUserId = req.session.user.userId;
 
   try {
-    // Open Cloud multipart/form-data payload definition
     const formData = new FormData();
 
-    // CRITICAL: creationContext.creator.userId must match the session's verified sub ID
     const requestJson = {
       assetType: 'Model',
       displayName: displayName || req.file.originalname.replace(/\.[^/.]+$/, ''),
