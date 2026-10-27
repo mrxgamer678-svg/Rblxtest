@@ -1,0 +1,15 @@
+{
+  "name": "roblox-model-uploader",
+  "version": "1.0.0",
+  "description": "Mobile-first Roblox Model Uploader via OAuth 2.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cookie-session": "^2.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}
